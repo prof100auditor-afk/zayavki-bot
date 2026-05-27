@@ -15,6 +15,7 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_KEY  = os.environ["ANTHROPIC_API_KEY"]
 MAKE_WEBHOOK   = os.environ["MAKE_WEBHOOK_URL"]
 
+# Обязательные поля — бот будет переспрашивать если null
 REQUIRED_FIELDS = {
     "company_name":    "Название компании",
     "inn":             "ИНН",
@@ -28,31 +29,36 @@ REQUIRED_FIELDS = {
 
 ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
-SYSTEM_PROMPT = """Ты — эксперт по извлечению данных о компаниях из сообщений любого формата.
-Сообщения могут содержать одну или несколько компаний, эмодзи, сокращения, технические данные (ОГРН, дата регистрации и т.д.) — игнорируй лишнее, извлекай только нужное.
+SYSTEM_PROMPT = """Ты — эксперт по извлечению данных о компаниях из сообщений.
 
-ПРАВИЛА ИЗВЛЕЧЕНИЯ:
-- company_name: название юрлица (ООО, ИП, АО и т.д.)
-- inn: ИНН — строго 10 или 12 цифр. ОГРН (13-15 цифр) — НЕ ИНН, игнорируй. Телефоны — НЕ ИНН.
-- payment_purpose: товар или услуга (удобрения, стройматериалы, оборудование и т.д.)
-- amount_range: сумма сделки (кк=млн, к=тыс)
-- bank: название банка
-- vat_rate: ставка НДС (20%, 22%, без НДС и т.д.)
-- cash_rate: комиссия/ставка по кэшу в %
-- conditions: сроки, документы (УПД, СФ, ЭДО), требования к ОКВЭД и контрагентам
-- issue_date: срок выдачи денег
-- cash_location: город и способ выдачи
-- comment: важные ограничения и особые условия
-- executor: @username если упомянут
+ГЛАВНОЕ ПРАВИЛО: Записывай ТОЛЬКО то, что ЯВНО написано в тексте.
+НИКОГДА не додумывай, не предполагай, не интерпретируй расширительно.
+Если данных нет или ты не уверен — ставь null.
 
-ВАЖНО: В сообщении может быть НЕСКОЛЬКО компаний — извлеки ВСЕ.
+ПРАВИЛА ПО ПОЛЯМ:
+- company_name: только официальное название юрлица (ООО, ИП, АО). Если не указано — null.
+- inn: строго 10 или 12 цифр. ОГРН (13-15 цифр) — НЕ ИНН. Телефон — НЕ ИНН. Сомневаешься — null.
+- payment_purpose: только явно указанный товар/услуга. Не угадывай по ОКВЭД или описанию деятельности.
+- amount_range: только явно указанная сумма. кк=млн, к=тыс.
+- bank: только явно названный банк.
+- vat_rate: только явно указанная ставка НДС. Не предполагай.
+- cash_rate: только явно указанный процент комиссии/кэша.
+- conditions: только явно написанные условия, сроки, документы.
+- issue_date: только явно указанный срок выдачи.
+- cash_location: только явно указанное место/способ выдачи.
+- company_type: только если явно написано "белый бизнес", "флагман" и т.д. Иначе null.
+- white_business: только если явно указано. Иначе null.
+- zsk_color: только если явно написан цвет ЗСК. Иначе null.
+- comment: только важная информация которая не вошла в другие поля и явно присутствует в тексте.
 
-Возвращай СТРОГО ТОЛЬКО валидный JSON-массив, без каких-либо пояснений:
-[{"company_name":null,"inn":null,"payment_purpose":null,"amount_range":null,"bank":null,"vat_rate":null,"cash_rate":null,"conditions":null,"relevance":"Актуально","company_type":null,"white_business":null,"zsk_color":null,"issue_date":null,"cash_location":null,"comment":null,"executor":null,"website":null}]
+НЕ ДОБАВЛЯЙ поля executor и source — их укажет пользователь.
+В сообщении может быть НЕСКОЛЬКО компаний — извлеки ВСЕ.
 
-Заполни поля реальными данными из текста. null — если данных нет."""
+Возвращай СТРОГО ТОЛЬКО валидный JSON-массив без пояснений:
+[{"company_name":null,"inn":null,"payment_purpose":null,"amount_range":null,"bank":null,"vat_rate":null,"cash_rate":null,"conditions":null,"relevance":"Актуально","company_type":null,"white_business":null,"zsk_color":null,"issue_date":null,"cash_location":null,"comment":null}]"""
 
-async def send_to_make(data: dict, source: str) -> bool:
+# ─── Make webhook ─────────────────────────────────────────────────────────────
+async def send_to_make(data: dict, source: str, executor: str) -> bool:
     payload = {
         "updated_at":      datetime.now().strftime("%d.%m.%Y %H:%M"),
         "relevance":       data.get("relevance") or "Актуально",
@@ -69,7 +75,7 @@ async def send_to_make(data: dict, source: str) -> bool:
         "issue_date":      data.get("issue_date") or "",
         "cash_location":   data.get("cash_location") or "",
         "comment":         data.get("comment") or "",
-        "executor":        data.get("executor") or "",
+        "executor":        executor,
         "website":         data.get("website") or "",
         "source":          source,
     }
@@ -77,14 +83,11 @@ async def send_to_make(data: dict, source: str) -> bool:
         r = await client.post(MAKE_WEBHOOK, json=payload, timeout=15)
         return r.status_code == 200
 
+# ─── Claude парсинг ───────────────────────────────────────────────────────────
 def clean_json(raw: str) -> str:
-    """Очищаем ответ Claude от лишнего текста и markdown."""
     raw = raw.strip()
-    # Убираем markdown блоки
     raw = re.sub(r'```(?:json)?', '', raw).replace('```', '').strip()
-    # Ищем JSON массив (берём самый длинный)
-    matches = list(re.finditer(r'\[', raw))
-    for m in matches:
+    for m in re.finditer(r'\[', raw):
         start = m.start()
         depth = 0
         for i, ch in enumerate(raw[start:]):
@@ -98,9 +101,7 @@ def clean_json(raw: str) -> str:
                         return candidate
                     except Exception:
                         break
-    # Ищем одиночный объект
-    matches = list(re.finditer(r'\{', raw))
-    for m in matches:
+    for m in re.finditer(r'\{', raw):
         start = m.start()
         depth = 0
         for i, ch in enumerate(raw[start:]):
@@ -117,7 +118,7 @@ def clean_json(raw: str) -> str:
     return raw
 
 def parse_with_claude(text: str, extra: str = "") -> list[dict]:
-    full = text + (f"\n\nДополнение пользователя: {extra}" if extra else "")
+    full = text + (f"\n\nДополнение от пользователя (используй для заполнения пустых полей):\n{extra}" if extra else "")
     response = ai.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=2000,
@@ -127,36 +128,14 @@ def parse_with_claude(text: str, extra: str = "") -> list[dict]:
     raw = response.content[0].text
     cleaned = clean_json(raw)
     result = json.loads(cleaned)
-    # Гарантируем что возвращаем список
     if isinstance(result, dict):
         return [result]
     return result
 
 def get_missing(data: dict) -> list:
-    return [k for k in REQUIRED_FIELDS if not data.get(k) or data.get(k) == "null"]
+    return [k for k in REQUIRED_FIELDS if not data.get(k) or str(data.get(k)).lower() == "null"]
 
-def get_source(msg) -> str:
-    try:
-        origin = msg.forward_origin
-        if origin is None:
-            return "личный чат"
-        if hasattr(origin, 'chat') and origin.chat:
-            return origin.chat.title or origin.chat.username or "канал"
-        if hasattr(origin, 'sender_user') and origin.sender_user:
-            u = origin.sender_user
-            return f"@{u.username}" if u.username else u.full_name
-        if hasattr(origin, 'sender_user_name') and origin.sender_user_name:
-            return origin.sender_user_name
-        return "неизвестный источник"
-    except Exception:
-        return "личный чат"
-
-def is_forwarded(msg) -> bool:
-    try:
-        return msg.forward_origin is not None
-    except Exception:
-        return False
-
+# ─── Форматирование ───────────────────────────────────────────────────────────
 FIELD_EMOJI = {
     "company_name":    "🏢 Компания",
     "inn":             "🔢 ИНН",
@@ -173,8 +152,6 @@ FIELD_EMOJI = {
     "issue_date":      "📅 Срок выдачи",
     "cash_location":   "📍 Выдача кэша",
     "comment":         "💬 Комментарий",
-    "executor":        "👤 Исполнитель",
-    "website":         "🌐 Сайт",
 }
 
 def format_company(data: dict, index: int = None) -> str:
@@ -182,26 +159,27 @@ def format_company(data: dict, index: int = None) -> str:
     lines = [prefix + "*Извлечённые данные:*\n"]
     for key, label in FIELD_EMOJI.items():
         val = data.get(key)
-        if val and val != "null":
+        if val and str(val).lower() != "null":
             lines.append(f"{label}: {val}")
     return "\n".join(lines)
 
 def format_missing_msg(missing: list) -> str:
-    labels = "\n".join(f"  • {REQUIRED_FIELDS[k]}" for k in missing)
-    return f"❓ *Не хватает данных:*\n{labels}\n\nДопиши или нажми кнопку чтобы записать как есть."
+    lines = ["❓ *Не хватает данных — укажи по одному:*\n"]
+    for k in missing:
+        lines.append(f"  • {REQUIRED_FIELDS[k]}")
+    lines.append("\nОтвечай на все сразу в одном сообщении, или нажми кнопку.")
+    return "\n".join(lines)
 
-# Сессии: { user_id: { pending: [компании на уточнение], current_idx, source, original_text, extra } }
+# ─── Сессии ───────────────────────────────────────────────────────────────────
 sessions: dict = {}
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Привет!*\n\n"
         "Пересылай мне сообщения с заявками из Telegram-групп.\n\n"
-        "Я умею:\n"
-        "• Извлекать данные из текста любого формата\n"
-        "• Обрабатывать несколько компаний из одного сообщения\n"
-        "• Уточнять недостающие данные\n"
-        "• Записывать всё в Google Sheets 📊",
+        "Я записываю только то что явно написано в тексте.\n"
+        "Если чего-то нет — спрошу у тебя.\n\n"
+        "После каждой заявки уточню источник и исполнителя 📊",
         parse_mode="Markdown"
     )
 
@@ -211,42 +189,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (msg.text or msg.caption or "").strip()
 
     if not text:
-        await msg.reply_text("⚠️ Пустое сообщение. Перешли заявку с текстом.")
+        await msg.reply_text("⚠️ Пустое сообщение.")
         return
 
-    source = get_source(msg)
-    forwarded = is_forwarded(msg)
     session = sessions.get(user_id)
 
-    # Ответ на уточняющий вопрос
-    if session and session.get("waiting_clarification") and not forwarded:
+    # ── Ввод источника ────────────────────────────────────────────────────────
+    if session and session.get("stage") == "ask_source":
+        session["source"] = text
+        session["stage"] = "ask_executor"
+        await msg.reply_text(
+            "👤 *Исполнитель* (например @username или имя)\n"
+            "или `-` если нет:",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ── Ввод исполнителя ──────────────────────────────────────────────────────
+    if session and session.get("stage") == "ask_executor":
+        session["executor"] = "" if text == "-" else text
+        session["stage"] = "saving"
+        await _save_current(update, session, user_id)
+        return
+
+    # ── Уточнение данных компании ─────────────────────────────────────────────
+    if session and session.get("stage") == "clarify":
         idx = session["current_idx"]
         session["extra"] = (session.get("extra") or "") + "\n" + text
         try:
             updated_list = parse_with_claude(session["original_text"], session["extra"])
-            if idx < len(updated_list):
-                updated = updated_list[idx]
-            else:
-                updated = updated_list[0]
+            updated = updated_list[idx] if idx < len(updated_list) else updated_list[0]
             for k, v in updated.items():
-                if v and v != "null":
+                if v and str(v).lower() != "null":
                     session["pending"][idx][k] = v
         except Exception as e:
-            logger.error(f"Claude clarification error: {e}")
-            await msg.reply_text("⚠️ Ошибка обработки. Попробуй написать данные ещё раз.")
+            logger.error(f"Clarification error: {e}")
+            await msg.reply_text("⚠️ Ошибка обработки. Попробуй ещё раз.")
             return
         await _process_current(update, session, user_id)
         return
 
-    # Новое сообщение — парсим
-    proc = await msg.reply_text("⏳ Анализирую сообщение...")
+    # ── Новое сообщение ───────────────────────────────────────────────────────
+    proc = await msg.reply_text("⏳ Анализирую...")
     try:
         companies = parse_with_claude(text)
     except Exception as e:
-        logger.error(f"Parse error: {e}\nRaw text: {text[:200]}")
+        logger.error(f"Parse error: {e}")
         await proc.edit_text(
             "⚠️ Не удалось распознать структуру.\n\n"
-            "Попробуй переслать ещё раз или добавь текст в формате:\n"
+            "Попробуй переслать ещё раз или напиши данные в формате:\n"
             "Компания: ...\nИНН: ...\nНазначение: ..."
         )
         return
@@ -254,17 +245,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await proc.delete()
 
     if not companies:
-        await msg.reply_text("⚠️ Компании не найдены в сообщении.")
+        await msg.reply_text("⚠️ Компании не найдены.")
         return
 
     sessions[user_id] = {
-        "pending": companies,
-        "current_idx": 0,
-        "source": source,
+        "pending":       companies,
+        "current_idx":   0,
         "original_text": text,
-        "extra": "",
-        "waiting_clarification": False,
-        "saved_count": 0,
+        "extra":         "",
+        "stage":         "clarify",
+        "source":        "",
+        "executor":      "",
+        "saved_count":   0,
     }
 
     total = len(companies)
@@ -278,10 +270,6 @@ async def _process_current(update: Update, session: dict, user_id: int):
     companies = session["pending"]
 
     if idx >= len(companies):
-        # Всё обработано
-        total = session["saved_count"]
-        await update.message.reply_text(f"✅ Готово! Записано компаний: *{total}*", parse_mode="Markdown")
-        del sessions[user_id]
         return
 
     data = companies[idx]
@@ -291,10 +279,10 @@ async def _process_current(update: Update, session: dict, user_id: int):
     found_text = format_company(data, index_label)
 
     if missing:
-        session["waiting_clarification"] = True
+        session["stage"] = "clarify"
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("⏭ Записать как есть", callback_data="skip_missing"),
-            InlineKeyboardButton("🗑 Пропустить компанию", callback_data="skip_company"),
+            InlineKeyboardButton("🗑 Пропустить", callback_data="skip_company"),
         ]])
         await update.message.reply_text(
             found_text + "\n\n" + format_missing_msg(missing),
@@ -303,8 +291,12 @@ async def _process_current(update: Update, session: dict, user_id: int):
         )
         return
 
-    session["waiting_clarification"] = False
-    await _save_current(update, session, user_id)
+    # Данные полные — спрашиваем источник
+    session["stage"] = "ask_source"
+    await update.message.reply_text(
+        found_text + "\n\n📢 *Из какого чата заявка?*\nНапиши точное название:",
+        parse_mode="Markdown"
+    )
 
 async def _save_current(update, session: dict, user_id: int):
     idx = session["current_idx"]
@@ -312,32 +304,44 @@ async def _save_current(update, session: dict, user_id: int):
     reply = getattr(update, 'message', None) or update.callback_query.message
 
     try:
-        ok = await send_to_make(data, session["source"])
+        ok = await send_to_make(data, session["source"], session["executor"])
         total = len(session["pending"])
         index_label = idx + 1 if total > 1 else None
         found_text = format_company(data, index_label)
 
         if ok:
             session["saved_count"] += 1
-            await reply.reply_text(f"{found_text}\n\n✅ Записано в Google Sheets!", parse_mode="Markdown")
+            src = session["source"] or "—"
+            exc = session["executor"] or "—"
+            await reply.reply_text(
+                f"{found_text}\n"
+                f"📢 Источник: {src}\n"
+                f"👤 Исполнитель: {exc}\n\n"
+                f"✅ Записано в Google Sheets!",
+                parse_mode="Markdown"
+            )
         else:
             await reply.reply_text("⚠️ Make webhook вернул ошибку. Проверь сценарий в Make.com")
     except Exception as e:
         logger.error(f"Make error: {e}")
-        await reply.reply_text(f"⚠️ Ошибка отправки:\n`{e}`", parse_mode="Markdown")
+        await reply.reply_text(f"⚠️ Ошибка:\n`{e}`", parse_mode="Markdown")
 
-    # Переходим к следующей компании
+    # Следующая компания
     session["current_idx"] += 1
     session["extra"] = ""
-    session["waiting_clarification"] = False
+    session["source"] = ""
+    session["executor"] = ""
+    session["stage"] = "clarify"
 
     if session["current_idx"] < len(session["pending"]):
         await _process_current(update, session, user_id)
     else:
-        total = session["saved_count"]
         if len(session["pending"]) > 1:
-            reply2 = getattr(update, 'message', None) or update.callback_query.message
-            await reply2.reply_text(f"🎉 Все компании обработаны! Записано: *{total}*", parse_mode="Markdown")
+            r = getattr(update, 'message', None) or update.callback_query.message
+            await r.reply_text(
+                f"🎉 Все компании обработаны! Записано: *{session['saved_count']}*",
+                parse_mode="Markdown"
+            )
         del sessions[user_id]
 
 async def handle_skip_missing(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,10 +350,17 @@ async def handle_skip_missing(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     session = sessions.get(user_id)
     if not session:
-        await query.message.reply_text("⚠️ Сессия устарела. Перешли заявку заново.")
+        await query.message.reply_text("⚠️ Сессия устарела.")
         return
-    session["waiting_clarification"] = False
-    await _save_current(update, session, user_id)
+    idx = session["current_idx"]
+    total = len(session["pending"])
+    index_label = idx + 1 if total > 1 else None
+    found_text = format_company(session["pending"][idx], index_label)
+    session["stage"] = "ask_source"
+    await query.message.reply_text(
+        found_text + "\n\n📢 *Из какого чата заявка?*\nНапиши точное название:",
+        parse_mode="Markdown"
+    )
 
 async def handle_skip_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -361,8 +372,7 @@ async def handle_skip_company(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await query.message.reply_text("🗑 Компания пропущена.")
     session["current_idx"] += 1
-    session["extra"] = ""
-    session["waiting_clarification"] = False
+    session["stage"] = "clarify"
     if session["current_idx"] < len(session["pending"]):
         await _process_current(update, session, user_id)
     else:
