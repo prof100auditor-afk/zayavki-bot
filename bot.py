@@ -29,39 +29,28 @@ REQUIRED_FIELDS = {
 ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 SYSTEM_PROMPT = """Ты — эксперт по извлечению данных о компаниях из сообщений любого формата.
-Сообщения могут содержать одну или несколько компаний, быть написаны в свободной форме, с эмодзи, сокращениями, на русском языке.
+Сообщения могут содержать одну или несколько компаний, эмодзи, сокращения, технические данные (ОГРН, дата регистрации и т.д.) — игнорируй лишнее, извлекай только нужное.
 
-ВАЖНО: В сообщении может быть НЕСКОЛЬКО компаний. Извлеки ВСЕ компании.
+ПРАВИЛА ИЗВЛЕЧЕНИЯ:
+- company_name: название юрлица (ООО, ИП, АО и т.д.)
+- inn: ИНН — строго 10 или 12 цифр. ОГРН (13-15 цифр) — НЕ ИНН, игнорируй. Телефоны — НЕ ИНН.
+- payment_purpose: товар или услуга (удобрения, стройматериалы, оборудование и т.д.)
+- amount_range: сумма сделки (кк=млн, к=тыс)
+- bank: название банка
+- vat_rate: ставка НДС (20%, 22%, без НДС и т.д.)
+- cash_rate: комиссия/ставка по кэшу в %
+- conditions: сроки, документы (УПД, СФ, ЭДО), требования к ОКВЭД и контрагентам
+- issue_date: срок выдачи денег
+- cash_location: город и способ выдачи
+- comment: важные ограничения и особые условия
+- executor: @username если упомянут
 
-Возвращай ТОЛЬКО валидный JSON-массив (даже если компания одна):
-[
-  {
-    "company_name":    "Название компании (ООО, ИП и т.д.)",
-    "inn":             "ИНН (только цифры, без пробелов, null если нет)",
-    "payment_purpose": "Назначение платежа — за что платят (удобрения, стройматериалы и т.д.)",
-    "amount_range":    "Сумма от и до (например: 12-13 млн, до 3кк, 500к-10кк)",
-    "bank":            "Банк или банки через запятую",
-    "vat_rate":        "Ставка НДС (20%, 22%, без НДС, 0%, null если не указано)",
-    "cash_rate":       "Ставка по кэшу/комиссия в процентах (например: 10%, 17, null если нет)",
-    "conditions":      "Условия: сроки выдачи, документы (УПД, счёт-фактура, ЭДО), требования к контрагентам",
-    "relevance":       "Актуально",
-    "company_type":    "Тип: Белый бизнес / Флагман / другое (null если не указано)",
-    "white_business":  "Да или Нет (null если не указано)",
-    "zsk_color":       "Зелёный / Жёлтый / Красный (null если не указано)",
-    "issue_date":      "Срок выдачи (например: след день, 4-5 дней, null если нет)",
-    "cash_location":   "Где и как выдают (город, карты, USDT, null если нет)",
-    "comment":         "Важные дополнительные условия, ограничения по ОКВЭД, требования",
-    "executor":        "username или имя исполнителя если есть",
-    "website":         "Сайт если упомянут"
-  }
-]
+ВАЖНО: В сообщении может быть НЕСКОЛЬКО компаний — извлеки ВСЕ.
 
-Правила:
-- Всегда возвращай МАССИВ [...] даже для одной компании
-- Если поле не найдено — ставь null (не пустую строку)
-- ИНН: только цифры, проверь что это именно ИНН (10 или 12 цифр)
-- кк = миллион, к = тысяча, млн = миллион
-- Возвращай ТОЛЬКО JSON-массив, никакого другого текста"""
+Возвращай СТРОГО ТОЛЬКО валидный JSON-массив, без каких-либо пояснений:
+[{"company_name":null,"inn":null,"payment_purpose":null,"amount_range":null,"bank":null,"vat_rate":null,"cash_rate":null,"conditions":null,"relevance":"Актуально","company_type":null,"white_business":null,"zsk_color":null,"issue_date":null,"cash_location":null,"comment":null,"executor":null,"website":null}]
+
+Заполни поля реальными данными из текста. null — если данных нет."""
 
 async def send_to_make(data: dict, source: str) -> bool:
     payload = {
@@ -93,14 +82,38 @@ def clean_json(raw: str) -> str:
     raw = raw.strip()
     # Убираем markdown блоки
     raw = re.sub(r'```(?:json)?', '', raw).replace('```', '').strip()
-    # Ищем JSON массив
-    match = re.search(r'\[.*\]', raw, re.DOTALL)
-    if match:
-        return match.group(0)
-    # Ищем одиночный объект и оборачиваем в массив
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if match:
-        return f"[{match.group(0)}]"
+    # Ищем JSON массив (берём самый длинный)
+    matches = list(re.finditer(r'\[', raw))
+    for m in matches:
+        start = m.start()
+        depth = 0
+        for i, ch in enumerate(raw[start:]):
+            if ch == '[': depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start:start+i+1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except Exception:
+                        break
+    # Ищем одиночный объект
+    matches = list(re.finditer(r'\{', raw))
+    for m in matches:
+        start = m.start()
+        depth = 0
+        for i, ch in enumerate(raw[start:]):
+            if ch == '{': depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start:start+i+1]
+                    try:
+                        json.loads(candidate)
+                        return f"[{candidate}]"
+                    except Exception:
+                        break
     return raw
 
 def parse_with_claude(text: str, extra: str = "") -> list[dict]:
