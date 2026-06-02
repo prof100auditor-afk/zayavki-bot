@@ -286,38 +286,23 @@ async def _process_current(update: Update, session: dict, user_id: int):
         return
 
     data = session["pending"][idx]
-    missing = get_missing(data)
     total = len(session["pending"])
     index_label = idx + 1 if total > 1 else None
     found_text = format_company(data, index_label)
 
-    # Есть незаполненные поля — спрашиваем
-    if missing:
-        session["stage"] = "clarify"
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭ Записать как есть", callback_data="skip_missing"),
-            InlineKeyboardButton("🗑 Пропустить", callback_data="skip_company"),
-        ]])
-        await update.message.reply_text(
-            found_text + "\n\n" + format_missing_msg(missing),
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-        return
-
-    # Все поля есть — проверяем дубль
+    # Сначала проверяем дубль по ИНН (до уточнения полей)
     inn = (data.get("inn") or "").strip().replace(" ", "")
     company_name = data.get("company_name") or ""
 
-    if inn:
+    if inn and not session.get("duplicate_checked"):
         logger.info(f"Checking duplicate: inn={inn}, company={company_name}")
         check_msg = await update.message.reply_text("🔍 Проверяю дубли...")
         dup = await check_duplicate(inn, company_name)
         logger.info(f"Duplicate result: {dup}")
         await check_msg.delete()
+        session["duplicate_checked"] = True
 
         if dup.get("found"):
-            # Дубль найден — спрашиваем что делать
             session["stage"] = "duplicate"
             session["duplicate_info"] = dup
             dup_name = dup.get("company_name") or company_name
@@ -344,7 +329,22 @@ async def _process_current(update: Update, session: dict, user_id: int):
             )
             return
 
-    # Дублей нет — спрашиваем источник
+    # Проверяем незаполненные поля
+    missing = get_missing(data)
+    if missing:
+        session["stage"] = "clarify"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⏭ Записать как есть", callback_data="skip_missing"),
+            InlineKeyboardButton("🗑 Пропустить", callback_data="skip_company"),
+        ]])
+        await update.message.reply_text(
+            found_text + "\n\n" + format_missing_msg(missing),
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        return
+
+    # Всё хорошо — спрашиваем источник
     session["stage"] = "ask_source"
     await update.message.reply_text(
         found_text + "\n\n📢 *Из какого чата заявка?*\nНапиши точное название:",
@@ -385,6 +385,7 @@ async def _save_current(update, session: dict, user_id: int):
     session["source"] = ""
     session["executor"] = ""
     session["stage"] = "clarify"
+    session["duplicate_checked"] = False
     session["duplicate_info"] = None
 
     if session["current_idx"] < len(session["pending"]):
