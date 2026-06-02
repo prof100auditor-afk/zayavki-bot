@@ -306,12 +306,14 @@ async def _process_current(update: Update, session: dict, user_id: int):
         return
 
     # Все поля есть — проверяем дубль
-    inn = data.get("inn") or ""
+    inn = (data.get("inn") or "").strip().replace(" ", "")
     company_name = data.get("company_name") or ""
 
     if inn:
+        logger.info(f"Checking duplicate: inn={inn}, company={company_name}")
         check_msg = await update.message.reply_text("🔍 Проверяю дубли...")
         dup = await check_duplicate(inn, company_name)
+        logger.info(f"Duplicate result: {dup}")
         await check_msg.delete()
 
         if dup.get("found"):
