@@ -15,6 +15,8 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_KEY  = os.environ["ANTHROPIC_API_KEY"]
 MAKE_WEBHOOK   = os.environ["MAKE_WEBHOOK_URL"]
 MAKE_CHECK_URL = os.environ["MAKE_CHECK_URL"]
+MAKE_UPDATE_URL = os.environ["MAKE_UPDATE_URL"]
+MAKE_UPDATE_URL = os.environ["MAKE_UPDATE_URL"]
 
 REQUIRED_FIELDS = {
     "company_name":    "Название компании",
@@ -96,6 +98,33 @@ async def send_to_make(data: dict, source: str, executor: str) -> bool:
     }
     async with httpx.AsyncClient() as client:
         r = await client.post(MAKE_WEBHOOK, json=payload, timeout=15)
+        return r.status_code == 200
+
+
+async def update_in_make(data: dict, source: str, executor: str, row: int) -> bool:
+    payload = {
+        "row":             row,
+        "updated_at":      datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "relevance":       data.get("relevance") or "Актуально",
+        "company_type":    data.get("company_type") or "",
+        "white_business":  data.get("white_business") or "",
+        "company_name":    data.get("company_name") or "",
+        "inn":             data.get("inn") or "",
+        "zsk_color":       data.get("zsk_color") or "",
+        "amount_range":    data.get("amount_range") or "",
+        "payment_purpose": data.get("payment_purpose") or "",
+        "bank":            data.get("bank") or "",
+        "vat_rate":        data.get("vat_rate") or "",
+        "cash_rate":       data.get("cash_rate") or "",
+        "issue_date":      data.get("issue_date") or "",
+        "cash_location":   data.get("cash_location") or "",
+        "comment":         data.get("comment") or "",
+        "executor":        executor,
+        "website":         data.get("website") or "",
+        "source":          source,
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(MAKE_UPDATE_URL, json=payload, timeout=15)
         return r.status_code == 200
 
 # ─── Claude парсинг ───────────────────────────────────────────────────────────
@@ -361,7 +390,14 @@ async def _save_current(update, session: dict, user_id: int):
     reply = getattr(update, 'message', None) or update.callback_query.message
 
     try:
-        ok = await send_to_make(data, session["source"], session["executor"])
+        is_update = session.get("dup_action") == "update"
+        dup_row = (session.get("dup_info") or {}).get("row")
+        if is_update and dup_row:
+            ok = await update_in_make(data, session["source"], session["executor"], int(dup_row))
+            action_text = "🔄 Обновлено в Google Sheets!"
+        else:
+            ok = await send_to_make(data, session["source"], session["executor"])
+            action_text = "✅ Записано в Google Sheets!"
         total = len(session["pending"])
         index_label = idx + 1 if total > 1 else None
         found_text = format_company(data, index_label)
@@ -374,7 +410,7 @@ async def _save_current(update, session: dict, user_id: int):
                 f"{found_text}\n"
                 f"📢 Источник: {src}\n"
                 f"👤 Исполнитель: {exc}\n\n"
-                f"✅ Записано в Google Sheets!",
+                f"{action_text}",
                 parse_mode="Markdown"
             )
         else:
@@ -383,6 +419,7 @@ async def _save_current(update, session: dict, user_id: int):
         logger.error(f"Save error: {e}")
         await reply.reply_text(f"⚠️ Ошибка:\n`{e}`", parse_mode="Markdown")
 
+    session["dup_action"] = None
     await _next_company(update, session, user_id)
 
 async def _next_company(update, session: dict, user_id: int):
