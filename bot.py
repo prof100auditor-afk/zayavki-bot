@@ -72,12 +72,22 @@ async def check_duplicate(inn: str, company_name: str) -> dict:
             if r.status_code == 200:
                 text = r.text.strip()
                 logger.info(f"Check duplicate response: {text[:200]}")
-                if not text or text == "Accepted":
+                # Не найдено — Make возвращает разный мусор
+                if not text or text in ("Accepted", "1", "0"):
                     return {"found": False}
-                data = r.json()
-                # row может быть строкой или числом
-                if "row" in data:
-                    data["row"] = int(str(data["row"]).strip())
+                # Make иногда добавляет мусор после JSON: {"found":true}0
+                # Берём только первый валидный JSON объект
+                import re as _re
+                m = _re.search(r'\{.*?\}', text, _re.DOTALL)
+                if not m:
+                    return {"found": False}
+                data = json.loads(m.group(0))
+                # Если found не установлен или нет данных — не дубль
+                if not data.get("found"):
+                    return {"found": False}
+                # Если row пустой — дубль есть но номер строки неизвестен
+                row = str(data.get("row", "")).strip()
+                data["row"] = int(row) if row.isdigit() else None
                 return data
     except Exception as e:
         logger.error(f"Check duplicate error: {e}")
@@ -133,7 +143,8 @@ async def update_in_make(data: dict, source: str, executor: str, row: int) -> bo
     }
     async with httpx.AsyncClient() as client:
         r = await client.post(MAKE_UPDATE_URL, json=payload, timeout=15)
-        return r.status_code == 200
+        logger.info(f"update_in_make response: {r.status_code} {r.text[:100]}")
+        return r.status_code in (200, 201, 202, 204)
 
 # ─── Claude парсинг ───────────────────────────────────────────────────────────
 def clean_json(raw: str) -> str:
