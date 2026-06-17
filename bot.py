@@ -149,6 +149,42 @@ def format_found(data: dict) -> str:
             lines.append(f"{label}: {val}")
     return "\n".join(lines)
 
+# Маппинг кнопок — отображение → значение для сохранения
+BUTTON_VALUES = {
+    "🟢 Зелёный": "Зелёный",
+    "🟡 Жёлтый": "Жёлтый",
+    "🟠 Жёлтый с типологией": "Жёлтый с типологией",
+    "🔴 Красный": "Красный",
+    "22%": "22%",
+    "10%": "10%",
+    "0%": "0%",
+    "БЕЗ НДС": "БЕЗ НДС",
+    "БЕЗ ОТЧЕТ": "БЕЗ ОТЧЕТ",
+    "Т+1": "Т+1",
+    "Т+2": "Т+2",
+    "Т+3": "Т+3",
+    "Т+4": "Т+4",
+    "Т+5": "Т+5",
+}
+
+# Индекс для callback_data (без спецсимволов)
+BUTTON_KEYS = {
+    "🟢 Зелёный": "green",
+    "🟡 Жёлтый": "yellow",
+    "🟠 Жёлтый с типологией": "yellow_typo",
+    "🔴 Красный": "red",
+    "22%": "vat22",
+    "10%": "vat10",
+    "0%": "vat0",
+    "БЕЗ НДС": "nonds",
+    "БЕЗ ОТЧЕТ": "noreport",
+    "Т+1": "t1",
+    "Т+2": "t2",
+    "Т+3": "t3",
+    "Т+4": "t4",
+    "Т+5": "t5",
+}
+
 def make_field_keyboard(field: str):
     buttons = FIELDS[field].get("buttons")
     if not buttons:
@@ -156,8 +192,8 @@ def make_field_keyboard(field: str):
     rows = []
     row = []
     for btn in buttons:
-        val = btn.split(" ", 1)[-1] if btn[0] in "🟢🟡🟠🔴" else btn
-        row.append(InlineKeyboardButton(btn, callback_data=f"fld_{field}_{val}"))
+        key = BUTTON_KEYS.get(btn, btn.replace(" ", "_"))
+        row.append(InlineKeyboardButton(btn, callback_data=f"fld_{field}_{key}"))
         if len(row) == 2:
             rows.append(row)
             row = []
