@@ -28,7 +28,7 @@ FIELDS = {
     "cash_rate":       {"label": "Ставка по кэшу",        "required": True},
     "issue_date":      {"label": "Дата выдачи/срок",      "required": True,  "buttons": [("Т+1","t1","Т+1"), ("Т+2","t2","Т+2"), ("Т+3","t3","Т+3"), ("Т+4","t4","Т+4"), ("Т+5","t5","Т+5")]},
     "comment":         {"label": "Комментарии",           "required": False},
-    "source":          {"label": "Источник (группа/чат)", "required": True},
+    "source":          {"label": "Источник (группа/чат)", "required": False},  # спрашивается отдельно
 }
 # buttons format: (value, key, label)
 
@@ -173,7 +173,7 @@ async def ask_next_field(msg, session, user_id):
     found_text = format_found(session["data"])
     keyboard = make_field_keyboard(field)
     if not keyboard and not FIELDS[field]["required"]:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_fld")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить", callback_data="skip_fld")]])
     await msg.reply_text(
         found_text + f"\n\n❓ *{label}:*",
         parse_mode="Markdown",
