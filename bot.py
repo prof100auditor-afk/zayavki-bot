@@ -1,8 +1,4 @@
-import os
-import json
-import logging
-import httpx
-import re
+import os, json, logging, httpx, re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -23,50 +19,46 @@ FIELDS = {
     "company_name":    {"label": "Название компании",     "required": True},
     "inn":             {"label": "ИНН",                   "required": True},
     "website":         {"label": "Сайт компании",         "required": False},
-    "zsk_color":       {"label": "Цвет ЗСК",              "required": True,  "buttons": ["🟢 Зелёный", "🟡 Жёлтый", "🟠 Жёлтый с типологией", "🔴 Красный"]},
-    "accepts_from":    {"label": "Принимает от",          "required": True,  "buttons": ["🟢 Зелёный", "🟡 Жёлтый", "🟠 Жёлтый с типологией", "🔴 Красный"]},
+    "zsk_color":       {"label": "Цвет ЗСК",              "required": True,  "buttons": [("Зелёный","green","🟢 Зелёный"), ("Жёлтый","yellow","🟡 Жёлтый"), ("Жёлтый с типологией","ytypо","🟠 Жёлтый с типологией"), ("Красный","red","🔴 Красный")]},
+    "accepts_from":    {"label": "Принимает от",          "required": True,  "buttons": [("Зелёный","green","🟢 Зелёный"), ("Жёлтый","yellow","🟡 Жёлтый"), ("Жёлтый с типологией","ytypо","🟠 Жёлтый с типологией"), ("Красный","red","🔴 Красный")]},
     "amount_range":    {"label": "Сумма ОТ и ДО",         "required": True},
     "payment_purpose": {"label": "Назначение платежа",    "required": True},
     "bank":            {"label": "Банк",                  "required": True},
-    "vat_rate":        {"label": "Ставка НДС",            "required": True,  "buttons": ["22%", "10%", "0%", "БЕЗ НДС", "БЕЗ ОТЧЕТ"]},
+    "vat_rate":        {"label": "Ставка НДС",            "required": True,  "buttons": [("22%","vat22","22%"), ("10%","vat10","10%"), ("0%","vat0","0%"), ("БЕЗ НДС","nonds","БЕЗ НДС"), ("БЕЗ ОТЧЕТ","noreport","БЕЗ ОТЧЕТ")]},
     "cash_rate":       {"label": "Ставка по кэшу",        "required": True},
-    "issue_date":      {"label": "Дата выдачи/срок",      "required": True,  "buttons": ["Т+1", "Т+2", "Т+3", "Т+4", "Т+5"]},
+    "issue_date":      {"label": "Дата выдачи/срок",      "required": True,  "buttons": [("Т+1","t1","Т+1"), ("Т+2","t2","Т+2"), ("Т+3","t3","Т+3"), ("Т+4","t4","Т+4"), ("Т+5","t5","Т+5")]},
     "comment":         {"label": "Комментарии",           "required": False},
     "source":          {"label": "Источник (группа/чат)", "required": True},
 }
+# buttons format: (value, key, label)
 
 REQUIRED_FIELDS = [k for k, v in FIELDS.items() if v["required"]]
 
 SYSTEM_PROMPT = """Ты — эксперт по извлечению данных о компаниях из сообщений.
-
 ПРАВИЛО: Записывай ТОЛЬКО то что ЯВНО написано. Если не уверен — null.
-
 - company_name: официальное название юрлица. Если нет — null.
-- inn: строго 10 или 12 цифр. ОГРН — НЕ ИНН. Сомневаешься — null.
+- inn: строго 10 или 12 цифр. ОГРН — НЕ ИНН.
 - website: сайт если упомянут, иначе null.
 - zsk_color: Зелёный/Жёлтый/Жёлтый с типологией/Красный. Сленг: зелень=Зелёный, желтяк=Жёлтый, типология/тиположка/коричневый/оранжевый=Жёлтый с типологией.
 - accepts_from: от каких принимает. Те же варианты. "Принимает от зелёных"=Зелёный.
-- amount_range: сумма. кк=млн, к=тыс. Если нет — null.
-- payment_purpose: назначение. Только явно указанное.
-- bank: явно названный банк. Нормализуй: сбер=Сбербанк, альфа=Альфа-Банк, псб=ПСБ.
-- vat_rate: 22%/10%/0%/БЕЗ НДС/БЕЗ ОТЧЕТ. "без отчёта/нал"=БЕЗ ОТЧЕТ.
+- amount_range: сумма. кк=млн, к=тыс.
+- payment_purpose: только явно указанное назначение.
+- bank: нормализуй: сбер=Сбербанк, альфа=Альфа-Банк, псб=ПСБ.
+- vat_rate: 22%/10%/0%/БЕЗ НДС/БЕЗ ОТЧЕТ.
 - cash_rate: конкретный % (17%). Без диапазонов.
 - issue_date: Т+N. "след день"=Т+1, "3 дня"=Т+3.
 - comment: важная доп. информация.
-
 НЕ ДОБАВЛЯЙ source.
-
 Возвращай ТОЛЬКО JSON:
 {"company_name":null,"inn":null,"website":null,"zsk_color":null,"accepts_from":null,"amount_range":null,"payment_purpose":null,"bank":null,"vat_rate":null,"cash_rate":null,"issue_date":null,"comment":null}"""
 
-async def check_duplicate(inn: str, company_name: str) -> dict:
+async def check_duplicate(inn, company_name):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(MAKE_CHECK_URL, json={"inn": inn, "company_name": company_name}, timeout=15)
             if r.status_code == 200:
                 text = r.text.strip()
-                logger.info(f"Dup check: {text[:200]}")
-                if not text or text in ("Accepted", "1", "0"):
+                if not text or text in ("Accepted","1","0"):
                     return {"found": False}
                 m = re.search(r'\{.*?\}', text, re.DOTALL)
                 if not m:
@@ -74,74 +66,65 @@ async def check_duplicate(inn: str, company_name: str) -> dict:
                 data = json.loads(m.group(0))
                 if not data.get("found"):
                     return {"found": False}
-                row = str(data.get("row", "")).strip()
+                row = str(data.get("row","")).strip()
                 data["row"] = int(row) if row.isdigit() else None
                 return data
     except Exception as e:
         logger.error(f"Dup check error: {e}")
     return {"found": False}
 
-def make_payload(data: dict, source: str) -> dict:
+def make_payload(data, source):
     return {
-        "updated_at":      datetime.now().strftime("%d.%m.%Y %H:%M"),
-        "company_name":    data.get("company_name") or "",
-        "inn":             data.get("inn") or "",
-        "website":         data.get("website") or "",
-        "zsk_color":       data.get("zsk_color") or "",
-        "accepts_from":    data.get("accepts_from") or "",
-        "amount_range":    data.get("amount_range") or "",
+        "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "company_name": data.get("company_name") or "",
+        "inn": data.get("inn") or "",
+        "website": data.get("website") or "",
+        "zsk_color": data.get("zsk_color") or "",
+        "accepts_from": data.get("accepts_from") or "",
+        "amount_range": data.get("amount_range") or "",
         "payment_purpose": data.get("payment_purpose") or "",
-        "bank":            data.get("bank") or "",
-        "vat_rate":        data.get("vat_rate") or "",
-        "cash_rate":       data.get("cash_rate") or "",
-        "issue_date":      data.get("issue_date") or "",
-        "comment":         data.get("comment") or "",
-        "source":          source,
+        "bank": data.get("bank") or "",
+        "vat_rate": data.get("vat_rate") or "",
+        "cash_rate": data.get("cash_rate") or "",
+        "issue_date": data.get("issue_date") or "",
+        "comment": data.get("comment") or "",
+        "source": source,
     }
 
-async def send_to_make(data: dict, source: str) -> bool:
+async def send_to_make(data, source):
     async with httpx.AsyncClient() as client:
         r = await client.post(MAKE_WEBHOOK, json=make_payload(data, source), timeout=15)
-        return r.status_code in (200, 201, 202, 204)
+        return r.status_code in (200,201,202,204)
 
-async def update_in_make(data: dict, source: str, row: int) -> bool:
+async def update_in_make(data, source, row):
     payload = make_payload(data, source)
     payload["row"] = row
     async with httpx.AsyncClient() as client:
         r = await client.post(MAKE_UPDATE_URL, json=payload, timeout=15)
-        return r.status_code in (200, 201, 202, 204)
+        return r.status_code in (200,201,202,204)
 
-def parse_with_claude(text: str, extra: str = "") -> dict:
-    full = text + (f"\n\nДополнение: {extra}" if extra else "")
+def parse_with_claude(text, extra=""):
+    full = text + (f"\nДополнение: {extra}" if extra else "")
     response = ai.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": full}],
+        model="claude-sonnet-4-5", max_tokens=1000, system=SYSTEM_PROMPT,
+        messages=[{"role":"user","content":full}],
     )
-    raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    raw = response.content[0].text.strip().replace("```json","").replace("```","").strip()
     m = re.search(r'\{.*\}', raw, re.DOTALL)
     return json.loads(m.group(0)) if m else {}
 
-def get_missing(data: dict) -> list:
-    return [k for k in REQUIRED_FIELDS if not data.get(k) or str(data.get(k)).lower() == "null"]
+def get_missing(data):
+    return [k for k in REQUIRED_FIELDS if not data.get(k) or str(data.get(k)).lower()=="null"]
 
 FIELD_EMOJI = {
-    "company_name":    "🏢 Компания",
-    "inn":             "🔢 ИНН",
-    "website":         "🌐 Сайт",
-    "zsk_color":       "🎨 Цвет ЗСК",
-    "accepts_from":    "✅ Принимает от",
-    "amount_range":    "💰 Сумма",
-    "payment_purpose": "💳 Назначение",
-    "bank":            "🏦 Банк",
-    "vat_rate":        "📊 НДС",
-    "cash_rate":       "📈 Ставка кэша",
-    "issue_date":      "📅 Срок",
-    "comment":         "💬 Комментарий",
+    "company_name": "🏢 Компания", "inn": "🔢 ИНН", "website": "🌐 Сайт",
+    "zsk_color": "🎨 Цвет ЗСК", "accepts_from": "✅ Принимает от",
+    "amount_range": "💰 Сумма", "payment_purpose": "💳 Назначение",
+    "bank": "🏦 Банк", "vat_rate": "📊 НДС", "cash_rate": "📈 Ставка кэша",
+    "issue_date": "📅 Срок", "comment": "💬 Комментарий",
 }
 
-def format_found(data: dict) -> str:
+def format_found(data):
     lines = ["*Данные:*\n"]
     for key, label in FIELD_EMOJI.items():
         val = data.get(key)
@@ -149,51 +132,14 @@ def format_found(data: dict) -> str:
             lines.append(f"{label}: {val}")
     return "\n".join(lines)
 
-# Маппинг кнопок — отображение → значение для сохранения
-BUTTON_VALUES = {
-    "🟢 Зелёный": "Зелёный",
-    "🟡 Жёлтый": "Жёлтый",
-    "🟠 Жёлтый с типологией": "Жёлтый с типологией",
-    "🔴 Красный": "Красный",
-    "22%": "22%",
-    "10%": "10%",
-    "0%": "0%",
-    "БЕЗ НДС": "БЕЗ НДС",
-    "БЕЗ ОТЧЕТ": "БЕЗ ОТЧЕТ",
-    "Т+1": "Т+1",
-    "Т+2": "Т+2",
-    "Т+3": "Т+3",
-    "Т+4": "Т+4",
-    "Т+5": "Т+5",
-}
-
-# Индекс для callback_data (без спецсимволов)
-BUTTON_KEYS = {
-    "🟢 Зелёный": "green",
-    "🟡 Жёлтый": "yellow",
-    "🟠 Жёлтый с типологией": "yellow_typo",
-    "🔴 Красный": "red",
-    "22%": "vat22",
-    "10%": "vat10",
-    "0%": "vat0",
-    "БЕЗ НДС": "nonds",
-    "БЕЗ ОТЧЕТ": "noreport",
-    "Т+1": "t1",
-    "Т+2": "t2",
-    "Т+3": "t3",
-    "Т+4": "t4",
-    "Т+5": "t5",
-}
-
-def make_field_keyboard(field: str):
+def make_field_keyboard(field):
     buttons = FIELDS[field].get("buttons")
     if not buttons:
         return None
     rows = []
     row = []
-    for btn in buttons:
-        key = BUTTON_KEYS.get(btn, btn.replace(" ", "_"))
-        row.append(InlineKeyboardButton(btn, callback_data=f"fld_{field}_{key}"))
+    for value, key, label in buttons:
+        row.append(InlineKeyboardButton(label, callback_data=f"fld_{field}_{key}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -202,13 +148,40 @@ def make_field_keyboard(field: str):
     rows.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"fld_{field}_manual")])
     return InlineKeyboardMarkup(rows)
 
-sessions: dict = {}
+def get_button_value(field, key):
+    """Получить реальное значение по ключу кнопки."""
+    for value, btn_key, label in FIELDS[field].get("buttons", []):
+        if btn_key == key:
+            return value
+    return key
+
+sessions = {}
+
+async def ask_next_field(msg, session, user_id):
+    """Задать следующий вопрос или спросить источник."""
+    missing = get_missing(session["data"])
+    if not missing:
+        session["stage"] = "ask_source"
+        await msg.reply_text(
+            format_found(session["data"]) + "\n\n📢 *Из какого чата заявка?*",
+            parse_mode="Markdown"
+        )
+        return
+    field = missing[0]
+    session["current_field"] = field
+    label = FIELDS[field]["label"]
+    found_text = format_found(session["data"])
+    keyboard = make_field_keyboard(field)
+    if not keyboard and not FIELDS[field]["required"]:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить", callback_data="skip_fld")]])
+    await msg.reply_text(
+        found_text + f"\n\n❓ *{label}:*",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Пересылай заявки — извлеку данные и запишу в таблицу 📊",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("👋 Пересылай заявки — извлеку данные и запишу в таблицу 📊")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -221,7 +194,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if session and session.get("stage") == "ask_source":
         session["source"] = text
-        await _check_dup(update, session, user_id)
+        await check_dup_and_save(msg, session, user_id)
         return
 
     if session and session.get("stage") == "manual_input":
@@ -230,7 +203,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session["data"][field] = text
             session["stage"] = "clarify"
             session["current_field"] = None
-            await _next_field(update, session, user_id)
+            await ask_next_field(msg, session, user_id)
         return
 
     if session and session.get("stage") == "clarify":
@@ -242,7 +215,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     session["data"][k] = v
         except Exception as e:
             logger.error(f"Clarify error: {e}")
-        await _next_field(update, session, user_id)
+        await ask_next_field(msg, session, user_id)
         return
 
     proc = await msg.reply_text("⏳ Анализирую...")
@@ -258,54 +231,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if msg.forward_origin:
             origin = msg.forward_origin
-            if hasattr(origin, 'chat') and origin.chat:
+            if hasattr(origin,'chat') and origin.chat:
                 source = origin.chat.title or "чат"
-            elif hasattr(origin, 'sender_user') and origin.sender_user:
+            elif hasattr(origin,'sender_user') and origin.sender_user:
                 u = origin.sender_user
                 source = f"@{u.username}" if u.username else u.full_name
     except Exception:
         pass
 
     sessions[user_id] = {
-        "data": data, "source": source,
-        "original_text": text, "extra": "",
-        "stage": "clarify", "dup_action": None,
+        "data": data, "source": source, "original_text": text,
+        "extra": "", "stage": "clarify", "dup_action": None,
         "dup_info": None, "current_field": None,
     }
-    await _next_field(update, sessions[user_id], user_id)
+    await ask_next_field(msg, sessions[user_id], user_id)
 
-async def _next_field(update, session: dict, user_id: int):
-    msg = update.message
-    missing = get_missing(session["data"])
-
-    if not missing:
-        session["stage"] = "ask_source"
-        await msg.reply_text(
-            format_found(session["data"]) + "\n\n📢 *Из какого чата заявка?*",
-            parse_mode="Markdown"
-        )
-        return
-
-    field = missing[0]
-    session["current_field"] = field
-    label = FIELDS[field]["label"]
-    found_text = format_found(session["data"])
-
-    keyboard = make_field_keyboard(field)
-    skip_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить", callback_data="skip_fld")]]) if not FIELDS[field]["required"] else None
-
-    await msg.reply_text(
-        found_text + f"\n\n❓ *{label}:*",
-        parse_mode="Markdown",
-        reply_markup=keyboard or skip_btn
-    )
-
-async def _check_dup(update, session: dict, user_id: int):
-    msg = update.message or update.callback_query.message
-    data = session["data"]
+async def check_dup_and_save(msg, session, user_id):
     await msg.reply_text("🔍 Проверяю дубли...")
+    data = session["data"]
     dup = await check_duplicate(data.get("inn") or "", data.get("company_name") or "")
-
     if dup.get("found"):
         session["stage"] = "dup_check"
         session["dup_info"] = dup
@@ -314,17 +258,16 @@ async def _check_dup(update, session: dict, user_id: int):
             [InlineKeyboardButton("🔄 Обновить", callback_data="dup_update")],
             [InlineKeyboardButton("🗑 Пропустить", callback_data="skip_company")],
         ])
-        company = data.get("company_name", "")
-        inn = data.get("inn", "")
         await msg.reply_text(
-            f"⚠️ *Найден дубль!*\n\n🏢 {dup.get('company_name', company)}\n🔢 ИНН: {inn}\n📢 Источник: {dup.get('source','—')}\n📅 Дата: {dup.get('updated_at','—')}\n\nЧто делаем?",
+            f"⚠️ *Найден дубль!*\n\n🏢 {dup.get('company_name', data.get('company_name',''))}\n"
+            f"🔢 ИНН: {data.get('inn','')}\n📢 Источник: {dup.get('source','—')}\n"
+            f"📅 Дата: {dup.get('updated_at','—')}\n\nЧто делаем?",
             parse_mode="Markdown", reply_markup=keyboard
         )
         return
-    await _save(update, session, user_id)
+    await save_data(msg, session, user_id)
 
-async def _save(update, session: dict, user_id: int):
-    reply = getattr(update, 'message', None) or update.callback_query.message
+async def save_data(msg, session, user_id):
     data = session["data"]
     source = session["source"]
     is_update = session.get("dup_action") == "update"
@@ -337,15 +280,15 @@ async def _save(update, session: dict, user_id: int):
             ok = await send_to_make(data, source)
             action = "✅ Записано"
         if ok:
-            await reply.reply_text(
+            await msg.reply_text(
                 f"{format_found(data)}\n📢 Источник: {source}\n\n{action} в Google Sheets!",
                 parse_mode="Markdown"
             )
         else:
-            await reply.reply_text("⚠️ Ошибка записи.")
+            await msg.reply_text("⚠️ Ошибка записи.")
     except Exception as e:
         logger.error(f"Save error: {e}")
-        await reply.reply_text(f"⚠️ Ошибка: `{e}`", parse_mode="Markdown")
+        await msg.reply_text(f"⚠️ Ошибка: {e}")
     if user_id in sessions:
         del sessions[user_id]
 
@@ -359,18 +302,17 @@ async def handle_field_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     parts = query.data.split("_", 2)
     field = parts[1]
-    value = parts[2]
-    if value == "manual":
+    key = parts[2]
+    if key == "manual":
         session["stage"] = "manual_input"
         session["current_field"] = field
         await query.message.reply_text(f"✏️ Введи *{FIELDS[field]['label']}*:", parse_mode="Markdown")
         return
+    value = get_button_value(field, key)
     session["data"][field] = value
     session["stage"] = "clarify"
     session["current_field"] = None
-    class FU:
-        message = query.message
-    await _next_field(FU(), session, user_id)
+    await ask_next_field(query.message, session, user_id)
 
 async def handle_skip_fld(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -384,9 +326,7 @@ async def handle_skip_fld(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["data"][field] = ""
     session["stage"] = "clarify"
     session["current_field"] = None
-    class FU:
-        message = query.message
-    await _next_field(FU(), session, user_id)
+    await ask_next_field(query.message, session, user_id)
 
 async def handle_dup_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -396,7 +336,7 @@ async def handle_dup_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session:
         return
     session["dup_action"] = "add"
-    await _save(update, session, user_id)
+    await save_data(query.message, session, user_id)
 
 async def handle_dup_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -406,7 +346,7 @@ async def handle_dup_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session:
         return
     session["dup_action"] = "update"
-    await _save(update, session, user_id)
+    await save_data(query.message, session, user_id)
 
 async def handle_skip_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
