@@ -21,9 +21,9 @@ FIELDS = {
     "website":         {"label": "Сайт компании",         "required": False},
     "zsk_color":       {"label": "Цвет ЗСК",              "required": True,  "buttons": [("Зелёный","green","🟢 Зелёный"), ("Жёлтый","yellow","🟡 Жёлтый"), ("Жёлтый с типологией","ytypо","🟠 Жёлтый с типологией"), ("Красный","red","🔴 Красный")]},
     "accepts_from":    {"label": "Принимает от",          "required": True,  "buttons": [("Зелёный","green","🟢 Зелёный"), ("Жёлтый","yellow","🟡 Жёлтый"), ("Жёлтый с типологией","ytypо","🟠 Жёлтый с типологией"), ("Красный","red","🔴 Красный")]},
-    "amount_range":    {"label": "Сумма ОТ и ДО",         "required": True},
+    "amount_range":    {"label": "Сумма ОТ и ДО",         "required": False},
     "payment_purpose": {"label": "Назначение платежа",    "required": True},
-    "bank":            {"label": "Банк",                  "required": True},
+    "bank":            {"label": "Банк",                  "required": False},
     "vat_rate":        {"label": "Ставка НДС",            "required": True,  "buttons": [("22%","vat22","22%"), ("10%","vat10","10%"), ("0%","vat0","0%"), ("БЕЗ НДС","nonds","БЕЗ НДС"), ("БЕЗ ОТЧЕТ","noreport","БЕЗ ОТЧЕТ")]},
     "cash_rate":       {"label": "Ставка по кэшу",        "required": True},
     "issue_date":      {"label": "Дата выдачи/срок",      "required": True,  "buttons": [("Т+1","t1","Т+1"), ("Т+2","t2","Т+2"), ("Т+3","t3","Т+3"), ("Т+4","t4","Т+4"), ("Т+5","t5","Т+5")]},
@@ -173,7 +173,7 @@ async def ask_next_field(msg, session, user_id):
     found_text = format_found(session["data"])
     keyboard = make_field_keyboard(field)
     if not keyboard and not FIELDS[field]["required"]:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Пропустить", callback_data="skip_fld")]])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_fld")]])
     await msg.reply_text(
         found_text + f"\n\n❓ *{label}:*",
         parse_mode="Markdown",
