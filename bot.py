@@ -139,13 +139,13 @@ def make_field_keyboard(field):
     rows = []
     row = []
     for value, key, label in buttons:
-        row.append(InlineKeyboardButton(label, callback_data=f"fld_{field}_{key}"))
+        row.append(InlineKeyboardButton(label, callback_data=f"fld|{field}|{key}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"fld_{field}_manual")])
+    rows.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"fld|{field}|manual")])
     return InlineKeyboardMarkup(rows)
 
 def get_button_value(field, key):
@@ -300,7 +300,7 @@ async def handle_field_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session:
         await query.message.reply_text("⚠️ Сессия устарела.")
         return
-    parts = query.data.split("_", 2)
+    parts = query.data.split("|", 2)
     field = parts[1]
     key = parts[2]
     if key == "manual":
@@ -359,7 +359,7 @@ async def handle_skip_company(update: Update, context: ContextTypes.DEFAULT_TYPE
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CallbackQueryHandler(handle_field_btn, pattern="^fld_"))
+    app.add_handler(CallbackQueryHandler(handle_field_btn, pattern="^fld[|]"))
     app.add_handler(CallbackQueryHandler(handle_skip_fld, pattern="^skip_fld$"))
     app.add_handler(CallbackQueryHandler(handle_dup_add, pattern="^dup_add$"))
     app.add_handler(CallbackQueryHandler(handle_dup_update, pattern="^dup_update$"))
